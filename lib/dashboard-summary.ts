@@ -7,13 +7,13 @@ import { redis } from "@/lib/redis";
 const DASHBOARD_TTL_SECONDS = 90;
 
 type DashboardSummary = {
-  userId: number;
+  userId: string;
   email: string;
   fullName: string | null;
   generatedAt: string;
 };
 
-export async function getDashboardSummary(userId: number): Promise<DashboardSummary> {
+export async function getDashboardSummary(userId: string): Promise<DashboardSummary> {
   const key = `dashboard:${userId}:summary`;
   const cached = await redis.get<DashboardSummary>(key);
 

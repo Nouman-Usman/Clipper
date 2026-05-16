@@ -16,7 +16,7 @@ export default async function DashboardPage() {
     await redis.set(sessionKey, session.user.id, { ex: 24 * 60 * 60 });
   }
 
-  const summary = await getDashboardSummary(Number(session.user.id));
+  const summary = await getDashboardSummary(session.user.id);
 
   return (
     <main className="mx-auto w-full max-w-4xl px-6 py-10">
