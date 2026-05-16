@@ -1,7 +1,12 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
-import { saveCaptionAction, savePostDraftAction, updateReviewStatusAction } from "@/app/actions/clip-actions";
+import {
+  markPostPublishedAction,
+  saveCaptionAction,
+  savePostDraftAction,
+  updateReviewStatusAction,
+} from "@/app/actions/clip-actions";
 import { auth } from "@/auth";
 import { getJobWithClips } from "@/lib/phase2/jobs";
 import { platformLabel, platforms } from "@/lib/platforms";
@@ -98,33 +103,44 @@ export default async function RunPage({ params }: RunPageProps) {
                   const post = posts.find((item) => item.clipId === clip.id && item.platform === platform.key);
 
                   return (
-                  <section key={platform.key}>
-                    <h3>{platformLabel(platform.key)}</h3>
-                    <form action={saveCaptionAction}>
-                      <input name="clipId" type="hidden" value={clip.id} />
-                      <input name="jobId" type="hidden" value={job.id} />
-                      <input name="platform" type="hidden" value={platform.key} />
-                      <textarea name="caption" rows={4} defaultValue={caption} />
-                      <button type="submit">Save caption</button>
-                    </form>
-                    <form action={savePostDraftAction}>
-                      <input name="clipId" type="hidden" value={clip.id} />
-                      <input name="jobId" type="hidden" value={job.id} />
-                      <input name="platform" type="hidden" value={platform.key} />
-                      <input name="caption" type="hidden" value={caption} />
-                      <label>
-                        Schedule
-                        <input name="scheduledFor" type="datetime-local" />
-                      </label>
-                      <button type="submit">{post ? "Update draft" : "Create draft"}</button>
-                    </form>
-                    {post ? (
-                      <p className="post-state">
-                        {post.status}
-                        {post.scheduledFor ? ` for ${new Date(post.scheduledFor).toLocaleString()}` : ""}
-                      </p>
-                    ) : null}
-                  </section>
+                    <section key={platform.key}>
+                      <h3>{platformLabel(platform.key)}</h3>
+                      <form action={saveCaptionAction}>
+                        <input name="clipId" type="hidden" value={clip.id} />
+                        <input name="jobId" type="hidden" value={job.id} />
+                        <input name="platform" type="hidden" value={platform.key} />
+                        <textarea name="caption" rows={4} defaultValue={caption} />
+                        <button type="submit">Save caption</button>
+                      </form>
+                      <form action={savePostDraftAction}>
+                        <input name="clipId" type="hidden" value={clip.id} />
+                        <input name="jobId" type="hidden" value={job.id} />
+                        <input name="platform" type="hidden" value={platform.key} />
+                        <textarea name="caption" rows={3} defaultValue={post?.caption ?? caption} />
+                        <label>
+                          Schedule
+                          <input name="scheduledFor" type="datetime-local" />
+                        </label>
+                        <button type="submit">{post ? "Update draft" : "Create draft"}</button>
+                      </form>
+                      {post ? (
+                        <div className="post-status-block">
+                          <p className="post-state">
+                            {post.status}
+                            {post.scheduledFor ? ` for ${new Date(post.scheduledFor).toLocaleString()}` : ""}
+                          </p>
+                          {post.errorMessage ? <p>{post.errorMessage}</p> : null}
+                          {post.status !== "published" ? (
+                            <form action={markPostPublishedAction}>
+                              <input name="postId" type="hidden" value={post.id} />
+                              <input name="jobId" type="hidden" value={job.id} />
+                              <input name="externalPostUrl" placeholder="Published URL (optional)" type="url" />
+                              <button type="submit">Mark published</button>
+                            </form>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </section>
                   );
                 })}
               </div>

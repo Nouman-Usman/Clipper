@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import OpenAI, { toFile } from "openai";
@@ -31,6 +31,12 @@ export type Phase1RunSummary = {
   outputRoot: string;
   createdAt: string;
   clips: Phase1Clip[];
+};
+
+export type PromptProfileInput = {
+  name: string;
+  niche: string;
+  instructions: string;
 };
 
 type GeminiClip = {
@@ -170,6 +176,7 @@ export function parsePhase1Form(formData: FormData) {
   const clipCount = Math.min(5, parsePositiveNumber(formData.get("clipCount"), DEFAULT_CLIP_COUNT));
   const minSeconds = parsePositiveNumber(formData.get("minSeconds"), DEFAULT_MIN_SECONDS);
   const maxSeconds = parsePositiveNumber(formData.get("maxSeconds"), DEFAULT_MAX_SECONDS);
+  const promptProfileId = String(formData.get("promptProfileId") ?? "").trim() || null;
 
   assertYouTubeUrl(url);
 
@@ -182,6 +189,7 @@ export function parsePhase1Form(formData: FormData) {
     clipCount,
     minSeconds,
     maxSeconds,
+    promptProfileId,
   };
 }
 
@@ -220,6 +228,19 @@ async function getVideoDurationSeconds(inputFile: string) {
   return Number.parseFloat(stdout.trim());
 }
 
+async function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fileExists(filePath: string) {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function transcribeWithWhisper(inputFile: string): Promise<WhisperVerboseResponse> {
   if (!process.env.GROQ_API) {
     throw new Error("GROQ_API is required for Groq Whisper transcription.");
@@ -231,12 +252,28 @@ async function transcribeWithWhisper(inputFile: string): Promise<WhisperVerboseR
   });
   const buffer = await readFile(inputFile);
 
-  return groq.audio.transcriptions.create({
-    file: await toFile(buffer, path.basename(inputFile)),
-    model: process.env.GROQ_WHISPER_MODEL ?? DEFAULT_GROQ_WHISPER_MODEL,
-    response_format: "verbose_json",
-    timestamp_granularities: ["segment"],
-  }) as Promise<WhisperVerboseResponse>;
+  let retries = 3;
+  while (retries > 0) {
+    try {
+      return await groq.audio.transcriptions.create({
+        file: await toFile(buffer, path.basename(inputFile)),
+        model: process.env.GROQ_WHISPER_MODEL ?? DEFAULT_GROQ_WHISPER_MODEL,
+        response_format: "verbose_json",
+        timestamp_granularities: ["segment"],
+      }) as Promise<WhisperVerboseResponse>;
+    } catch (error: any) {
+      const isStreamError = error?.cause?.code === 'ERR_HTTP2_STREAM_ERROR' || error?.cause?.cause?.code === 'ERR_HTTP2_STREAM_ERROR';
+      if (retries > 1 && (isStreamError || error.name === 'APIConnectionError' || error.message?.includes('Connection error'))) {
+        retries--;
+        const delay = (4 - retries) * 2000;
+        console.warn(`Groq stream error, retrying in ${delay}ms... (${retries} retries left)`);
+        await sleep(delay);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("Failed to transcribe after retries.");
 }
 
 function parseJsonFromModel(text: string) {
@@ -282,6 +319,7 @@ async function generateCaptionsWithGemini(input: {
     reason: string;
   };
   transcript: WhisperVerboseResponse;
+  promptProfile?: PromptProfileInput;
 }) {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error("GEMINI_API_KEY is required for caption generation.");
@@ -290,6 +328,9 @@ async function generateCaptionsWithGemini(input: {
   const model = process.env.GEMINI_MODEL ?? "gemini-1.5-pro";
   const prompt = [
     "Write platform-specific captions for a short podcast clip.",
+    input.promptProfile
+      ? `Use this niche profile: ${input.promptProfile.name} (${input.promptProfile.niche}). ${input.promptProfile.instructions}`
+      : "",
     "Return JSON only with keys: youtubeShorts, tiktok, instagramReels, x.",
     "Keep X under 280 characters. Keep each caption grounded in the transcript and clip reason.",
     `Source URL: ${input.sourceUrl}`,
@@ -342,6 +383,7 @@ async function pickClipsWithGemini(input: {
   clipCount: number;
   minSeconds: number;
   maxSeconds: number;
+  promptProfile?: PromptProfileInput;
 }) {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error("GEMINI_API_KEY is required for clip selection.");
@@ -356,6 +398,9 @@ async function pickClipsWithGemini(input: {
 
   const prompt = [
     "Select podcast clips that can stand alone as vertical short videos.",
+    input.promptProfile
+      ? `Use this niche profile: ${input.promptProfile.name} (${input.promptProfile.niche}). ${input.promptProfile.instructions}`
+      : "",
     `Return exactly ${input.clipCount} clips as JSON.`,
     "Shape: [{\"startSeconds\":number,\"endSeconds\":number,\"reason\":string}]",
     `Each clip must be ${input.minSeconds}-${input.maxSeconds} seconds.`,
@@ -423,9 +468,9 @@ async function cutClip(input: {
       "-c:v",
       "libx264",
       "-preset",
-      "medium",
+      "ultrafast",
       "-crf",
-      "20",
+      "30",
       "-c:a",
       "aac",
       "-movflags",
@@ -443,6 +488,7 @@ export async function runPhase1Pipeline(input: {
   minSeconds: number;
   maxSeconds: number;
   jobId?: string;
+  promptProfile?: PromptProfileInput;
   onStatus?: (status: PipelineStatus) => Promise<void>;
 }): Promise<Phase1RunSummary> {
   const environment = await getPhase1EnvironmentStatus();
@@ -460,34 +506,60 @@ export async function runPhase1Pipeline(input: {
   const root = runRoot(runId);
   const clipsDir = path.join(root, "clips");
   const inputFile = path.join(root, "source.mp4");
+  const audioFile = path.join(root, "audio.mp3");
+  const transcriptFile = path.join(root, "transcript.json");
 
   await mkdir(clipsDir, { recursive: true });
 
-  await input.onStatus?.("downloading");
-
-  await runCommand(
-    "yt-dlp",
-    [
-      "-f",
-      "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
-      "--merge-output-format",
-      "mp4",
-      "-o",
-      inputFile,
-      input.url,
-    ],
-    "yt-dlp"
-  );
+  if (!(await fileExists(inputFile))) {
+    await input.onStatus?.("downloading");
+    await runCommand(
+      "yt-dlp",
+      [
+        "-f",
+        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
+        "--merge-output-format",
+        "mp4",
+        "-o",
+        inputFile,
+        input.url,
+      ],
+      "yt-dlp"
+    );
+  }
 
   const durationSeconds = await getVideoDurationSeconds(inputFile);
   if (durationSeconds > MAX_SOURCE_SECONDS) {
     throw new Error(`Source is ${Math.round(durationSeconds)}s. Phase 1 max is ${MAX_SOURCE_SECONDS}s.`);
   }
 
-  await input.onStatus?.("transcribing");
+  if (!(await fileExists(audioFile))) {
+    await runCommand(
+      "ffmpeg",
+      [
+        "-y",
+        "-i",
+        inputFile,
+        "-vn",
+        "-c:a",
+        "libmp3lame",
+        "-q:a",
+        "2",
+        audioFile,
+      ],
+      "ffmpeg"
+    );
+  }
 
-  const transcript = await transcribeWithWhisper(inputFile);
-  await writeFile(path.join(root, "transcript.json"), JSON.stringify(transcript, null, 2));
+  let transcript: WhisperVerboseResponse;
+  if (await fileExists(transcriptFile)) {
+    const raw = await readFile(transcriptFile, "utf8");
+    transcript = JSON.parse(raw);
+  } else {
+    await input.onStatus?.("transcribing");
+    transcript = await transcribeWithWhisper(audioFile);
+    await writeFile(transcriptFile, JSON.stringify(transcript, null, 2));
+  }
 
   await input.onStatus?.("selecting");
 
@@ -496,6 +568,7 @@ export async function runPhase1Pipeline(input: {
     clipCount: input.clipCount,
     minSeconds: input.minSeconds,
     maxSeconds: input.maxSeconds,
+    promptProfile: input.promptProfile,
   });
 
   if (!selectedClips.length) {
@@ -532,13 +605,16 @@ export async function runPhase1Pipeline(input: {
 
   await input.onStatus?.("captioning");
 
-  for (const clip of clips) {
-    clip.captions = await generateCaptionsWithGemini({
-      sourceUrl: input.url,
-      clip,
-      transcript,
-    });
-  }
+  await Promise.all(
+    clips.map(async (clip) => {
+      clip.captions = await generateCaptionsWithGemini({
+        sourceUrl: input.url,
+        clip,
+        transcript,
+        promptProfile: input.promptProfile,
+      });
+    })
+  );
 
   const summary: Phase1RunSummary = {
     runId,

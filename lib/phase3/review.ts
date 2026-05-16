@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, lte } from "drizzle-orm";
 
 import { clips, jobs, posts } from "@/drizzle/schema";
 import { db } from "@/lib/db";
@@ -108,4 +108,57 @@ export async function upsertPostDraft(input: {
     scheduledFor: input.scheduledFor ?? null,
     status: input.scheduledFor ? "scheduled" : "draft",
   });
+}
+
+export async function markPostPublished(input: {
+  postId: string;
+  userId: string;
+  externalPostUrl?: string | null;
+}) {
+  const [row] = await db
+    .select({
+      post: posts,
+      job: jobs,
+    })
+    .from(posts)
+    .innerJoin(clips, eq(posts.clipId, clips.id))
+    .innerJoin(jobs, eq(clips.jobId, jobs.id))
+    .where(and(eq(posts.id, input.postId), eq(jobs.userId, input.userId)))
+    .limit(1);
+
+  if (!row) {
+    throw new Error("Post not found.");
+  }
+
+  await db
+    .update(posts)
+    .set({
+      status: "published",
+      externalPostUrl: input.externalPostUrl?.trim() || null,
+      errorMessage: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(posts.id, input.postId));
+}
+
+export async function processDueScheduledPosts() {
+  const duePosts = await db
+    .select()
+    .from(posts)
+    .where(and(eq(posts.status, "scheduled"), lte(posts.scheduledFor, new Date())));
+
+  for (const post of duePosts) {
+    await db
+      .update(posts)
+      .set({
+        status: "ready",
+        errorMessage: "External auto-posting is not connected yet. Download the clip and post manually.",
+        updatedAt: new Date(),
+      })
+      .where(eq(posts.id, post.id));
+  }
+
+  return {
+    processed: duePosts.length,
+  };
 }

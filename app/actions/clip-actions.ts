@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
-import { updateClipCaption, updateClipReviewStatus, upsertPostDraft } from "@/lib/phase3/review";
+import { markPostPublished, updateClipCaption, updateClipReviewStatus, upsertPostDraft } from "@/lib/phase3/review";
 
 function requireString(formData: FormData, key: string) {
   const value = String(formData.get(key) ?? "").trim();
@@ -77,6 +77,21 @@ export async function savePostDraftAction(formData: FormData) {
     platform,
     caption,
     scheduledFor,
+  });
+
+  revalidatePath(`/dashboard/runs/${jobId}`);
+}
+
+export async function markPostPublishedAction(formData: FormData) {
+  const userId = await requireUserId();
+  const postId = requireString(formData, "postId");
+  const jobId = requireString(formData, "jobId");
+  const externalPostUrl = String(formData.get("externalPostUrl") ?? "").trim() || null;
+
+  await markPostPublished({
+    postId,
+    userId,
+    externalPostUrl,
   });
 
   revalidatePath(`/dashboard/runs/${jobId}`);

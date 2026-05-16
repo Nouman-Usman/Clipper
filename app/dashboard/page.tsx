@@ -1,10 +1,12 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 
 import { runPhase1Action } from "@/app/actions/phase1-actions";
 import { auth, signOut } from "@/auth";
 import { getDashboardSummary } from "@/lib/dashboard-summary";
 import { getPhase1EnvironmentStatus } from "@/lib/phase1/pipeline";
 import { listJobsForUser } from "@/lib/phase2/jobs";
+import { ensureDefaultPromptProfile, listPromptProfiles } from "@/lib/phase4/profiles";
 import { redis } from "@/lib/redis";
 
 type DashboardPageProps = {
@@ -25,6 +27,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 
   const summary = await getDashboardSummary(session.user.id);
   const environment = await getPhase1EnvironmentStatus();
+  await ensureDefaultPromptProfile(session.user.id);
+  const promptProfiles = await listPromptProfiles(session.user.id);
   const recentJobs = await listJobsForUser(session.user.id);
   const params = await searchParams;
   const phase1Error = params.phase1Error ? decodeURIComponent(params.phase1Error) : null;
@@ -38,14 +42,17 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           <p>Submit a YouTube URL, transcribe it with Groq Whisper, select moments with Gemini, and save vertical clips locally.</p>
         </div>
 
-        <form
-          action={async () => {
-            "use server";
-            await signOut({ redirectTo: "/login" });
-          }}
-        >
-          <button className="secondary-button" type="submit">Sign out</button>
-        </form>
+        <div className="dashboard-actions">
+          <Link className="secondary-button" href="/dashboard/settings">Settings</Link>
+          <form
+            action={async () => {
+              "use server";
+              await signOut({ redirectTo: "/login" });
+            }}
+          >
+            <button className="secondary-button" type="submit">Sign out</button>
+          </form>
+        </div>
       </div>
 
       <section className="dashboard-grid">
@@ -80,6 +87,17 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           <label>
             YouTube URL
             <input name="url" placeholder="https://www.youtube.com/watch?v=..." required type="url" />
+          </label>
+
+          <label>
+            Prompt profile
+            <select name="promptProfileId">
+              {promptProfiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.name} · {profile.niche}
+                </option>
+              ))}
+            </select>
           </label>
 
           <div className="phase1-controls">

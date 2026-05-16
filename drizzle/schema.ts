@@ -20,6 +20,7 @@ export const jobs = pgTable("jobs", {
   errorMessage: text("error_message"),
   durationSeconds: real("duration_seconds"),
   outputRoot: text("output_root"),
+  promptProfileId: uuid("prompt_profile_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });

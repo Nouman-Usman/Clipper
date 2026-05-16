@@ -13,12 +13,13 @@ export type JobStatus =
   | "completed"
   | "failed";
 
-export async function createJob(input: { userId: string; sourceUrl: string }) {
+export async function createJob(input: { userId: string; sourceUrl: string; promptProfileId?: string | null }) {
   const [job] = await db
     .insert(jobs)
     .values({
       userId: input.userId,
       sourceUrl: input.sourceUrl,
+      promptProfileId: input.promptProfileId ?? null,
       status: "pending",
     })
     .returning();

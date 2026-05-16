@@ -1,0 +1,1 @@
+ALTER TABLE "jobs" ADD COLUMN "prompt_profile_id" uuid;
