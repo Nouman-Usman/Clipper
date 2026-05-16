@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
+import { saveCaptionAction, savePostDraftAction, updateReviewStatusAction } from "@/app/actions/clip-actions";
 import { auth } from "@/auth";
 import { getJobWithClips } from "@/lib/phase2/jobs";
+import { platformLabel, platforms } from "@/lib/platforms";
 
 type RunPageProps = {
   params: Promise<{ runId: string }>;
@@ -26,7 +28,7 @@ export default async function RunPage({ params }: RunPageProps) {
     notFound();
   }
 
-  const { job, clips } = result;
+  const { job, clips, posts } = result;
 
   return (
     <main className="dashboard-shell">
@@ -64,6 +66,17 @@ export default async function RunPage({ params }: RunPageProps) {
               <p className="dashboard-kicker">Clip {index + 1}</p>
               <h2>{clip.durationSeconds}s vertical export</h2>
               <p>{clip.reason}</p>
+              <div className="review-actions">
+                <span>{clip.reviewStatus}</span>
+                {(["approved", "rejected", "pending"] as const).map((reviewStatus) => (
+                  <form action={updateReviewStatusAction} key={reviewStatus}>
+                    <input name="clipId" type="hidden" value={clip.id} />
+                    <input name="jobId" type="hidden" value={job.id} />
+                    <input name="reviewStatus" type="hidden" value={reviewStatus} />
+                    <button type="submit">{reviewStatus}</button>
+                  </form>
+                ))}
+              </div>
               <dl>
                 <div>
                   <dt>Start</dt>
@@ -80,12 +93,40 @@ export default async function RunPage({ params }: RunPageProps) {
               </dl>
               <a className="primary-button" download href={clip.publicPath}>Download clip</a>
               <div className="caption-grid">
-                {Object.entries(clip.captionsJson).map(([platform, caption]) => (
-                  <section key={platform}>
-                    <h3>{platform}</h3>
-                    <p>{caption}</p>
+                {platforms.map((platform) => {
+                  const caption = clip.captionsJson[platform.key] ?? "";
+                  const post = posts.find((item) => item.clipId === clip.id && item.platform === platform.key);
+
+                  return (
+                  <section key={platform.key}>
+                    <h3>{platformLabel(platform.key)}</h3>
+                    <form action={saveCaptionAction}>
+                      <input name="clipId" type="hidden" value={clip.id} />
+                      <input name="jobId" type="hidden" value={job.id} />
+                      <input name="platform" type="hidden" value={platform.key} />
+                      <textarea name="caption" rows={4} defaultValue={caption} />
+                      <button type="submit">Save caption</button>
+                    </form>
+                    <form action={savePostDraftAction}>
+                      <input name="clipId" type="hidden" value={clip.id} />
+                      <input name="jobId" type="hidden" value={job.id} />
+                      <input name="platform" type="hidden" value={platform.key} />
+                      <input name="caption" type="hidden" value={caption} />
+                      <label>
+                        Schedule
+                        <input name="scheduledFor" type="datetime-local" />
+                      </label>
+                      <button type="submit">{post ? "Update draft" : "Create draft"}</button>
+                    </form>
+                    {post ? (
+                      <p className="post-state">
+                        {post.status}
+                        {post.scheduledFor ? ` for ${new Date(post.scheduledFor).toLocaleString()}` : ""}
+                      </p>
+                    ) : null}
                   </section>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </article>

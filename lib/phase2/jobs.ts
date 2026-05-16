@@ -1,6 +1,6 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 
-import { clips, jobs } from "@/drizzle/schema";
+import { clips, jobs, posts } from "@/drizzle/schema";
 import { db } from "@/lib/db";
 
 export type JobStatus =
@@ -113,8 +113,16 @@ export async function getJobWithClips(input: { jobId: string; userId: string }) 
     .where(eq(clips.jobId, input.jobId))
     .orderBy(clips.createdAt);
 
+  const postRows = jobClips.length
+    ? await db
+        .select()
+        .from(posts)
+        .where(inArray(posts.clipId, jobClips.map((clip) => clip.id)))
+    : [];
+
   return {
     job,
     clips: jobClips,
+    posts: postRows,
   };
 }
