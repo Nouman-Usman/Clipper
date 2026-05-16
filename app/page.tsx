@@ -6,6 +6,7 @@ const navItems = [
   { label: "Workflow", href: "#workflow" },
   { label: "Pricing", href: "#pricing" },
   { label: "FAQ", href: "#faq" },
+  { label: "Sign in", href: "/login" },
 ];
 
 const proof = [
@@ -100,8 +101,8 @@ export default function Home() {
             </a>
           ))}
         </nav>
-        <a className="nav-cta" href="#waitlist">
-          Request access
+        <a className="nav-cta" href="/signup">
+          Create account
         </a>
       </header>
 
@@ -116,11 +117,11 @@ export default function Home() {
               moving through review, schedule, and publish.
             </p>
             <div className="hero-actions">
-              <a className="primary-button" href="#waitlist">
-                Request early access
+              <a className="primary-button" href="/signup">
+                Start free
               </a>
-              <a className="secondary-button" href="#product">
-                View workflow
+              <a className="secondary-button" href="/login">
+                Sign in
               </a>
             </div>
             <p className="hero-note">Built for podcast teams shipping clips every week.</p>
