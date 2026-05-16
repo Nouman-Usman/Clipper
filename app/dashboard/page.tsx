@@ -7,18 +7,14 @@ import { redis } from "@/lib/redis";
 export default async function DashboardPage() {
   const session = await auth();
 
-  if (!session?.user?.id || !session.user.sid) {
+  if (!session?.user?.id) {
     redirect("/login");
   }
 
-  const sessionKey = `session:${session.user.sid}`;
-  const activeSessionUserId = await redis.get<string>(sessionKey);
-
-  if (activeSessionUserId !== session.user.id) {
-    redirect("/login");
+  if (session.user.sid) {
+    const sessionKey = `session:${session.user.sid}`;
+    await redis.set(sessionKey, session.user.id, { ex: 24 * 60 * 60 });
   }
-
-  await redis.expire(sessionKey, 24 * 60 * 60);
 
   const summary = await getDashboardSummary(Number(session.user.id));
 

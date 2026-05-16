@@ -106,14 +106,5 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
       return session;
     },
-    authorized: async ({ auth, request }) => {
-      const isDashboardRoute = request.nextUrl.pathname.startsWith("/dashboard");
-
-      if (!isDashboardRoute) {
-        return true;
-      }
-
-      return !!auth;
-    },
   },
 });

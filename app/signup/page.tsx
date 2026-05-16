@@ -3,7 +3,6 @@ import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
 import { signupAction } from "@/app/actions/auth-actions";
-import { redis } from "@/lib/redis";
 
 type SignupPageProps = {
   searchParams: Promise<{ error?: string }>;
@@ -22,15 +21,7 @@ const messages: Record<string, string> = {
 export default async function SignupPage({ searchParams }: SignupPageProps) {
   const session = await auth();
 
-  if (session?.user?.id && session.user.sid) {
-    const sessionKey = `session:${session.user.sid}`;
-    const activeSessionUserId = await redis.get<string>(sessionKey);
-
-    if (activeSessionUserId === session.user.id) {
-      await redis.expire(sessionKey, 24 * 60 * 60);
-      redirect("/dashboard");
-    }
-  } else if (session?.user?.id) {
+  if (session?.user?.id) {
     redirect("/dashboard");
   }
 
