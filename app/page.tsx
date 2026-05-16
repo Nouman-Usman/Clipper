@@ -48,7 +48,7 @@ const workflow = [
   {
     step: "03",
     title: "Process asynchronously",
-    body: "The web app queues the job. A long-running worker handles yt-dlp, Whisper, Claude, FFmpeg, R2, and posting.",
+    body: "The web app queues the job. Next.js server code handles yt-dlp, Groq Whisper, Gemini, FFmpeg, and persisted run status.",
   },
   {
     step: "04",

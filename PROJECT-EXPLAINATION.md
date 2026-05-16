@@ -72,16 +72,16 @@ URL  →  Download  →  Transcribe  →  Pick clips  →  Cut + reframe  →  C
 Each stage takes seconds to minutes. The whole pipeline is async; the user never waits on an HTTP request.
 
 ### 3.2 System components
-- **Web app (Next.js on Vercel)** — UI, OAuth flows, dashboard, API endpoints for submit/poll/edit. Stateless. Never runs heavy work.
-- **Worker (Node.js, long-running, on Railway/Fly/Render)** — consumes the job queue and runs the pipeline. **This is mandatory; do not attempt to run FFmpeg or transcription inside a Next.js API route.** Vercel functions cap at 5 minutes; a 60-minute video easily blows that.
-- **Job queue (BullMQ on Redis)** — connects web → worker. Hosted Redis on Upstash or Railway.
+- **Web app (Next.js)** — UI, auth, dashboard, pipeline server actions, and result pages. For the current build direction, Phase 1 and Phase 2 stay inside this app.
+- **Local processing runtime (Next.js server code)** — runs yt-dlp, Groq Whisper, Gemini, and FFmpeg from server actions/route handlers on a machine that supports long-running Node processes and local binaries.
+- **Redis (Upstash)** — session/status/cache/rate-limit support.
 - **Database (Postgres on Supabase or Neon)** — users, jobs, clips, social accounts, posts.
 - **Object storage (Cloudflare R2 preferred; S3 backup)** — source video temp storage and final clip storage. R2 wins on egress cost (free).
-- **AI providers** — OpenAI Whisper for transcription; Anthropic Claude for clip selection and caption generation.
+- **AI providers** — Groq Whisper for transcription; Gemini for clip selection and caption generation.
 
 ### 3.3 Why this shape
-- **Separation of web and worker** is non-negotiable because pipeline runtime exceeds serverless limits.
-- **Queue between them** gives retries, concurrency control, and observability for free.
+- **Next.js-only execution** keeps the current product simple and local-first, at the cost of requiring a host that can run long requests and FFmpeg.
+- **Redis-backed status/cache** gives a path to progress tracking and rate limits without adding another app.
 - **Postgres for state, Redis for queue** is the boring correct answer; do not invent a custom orchestrator.
 - **R2 over S3** saves money on a workload that is naturally egress-heavy (uploading clips to four social platforms means downloading each one four times).
 
@@ -140,9 +140,9 @@ Each platform has its own gatekeeping. Start applications immediately — they t
 
 ### 4.4 Cost economics
 Per-video processing costs (approximate, validate before pricing):
-- Whisper transcription: ~$0.006/min of audio
-- Claude clip-picking (1 call, full transcript context): a few cents
-- Claude captions (N parallel calls, one per clip): a few cents
+- Groq Whisper transcription: validate current Groq pricing before production pricing decisions.
+- Gemini clip-picking (1 call, full transcript context): validate current Gemini pricing before production pricing decisions.
+- Gemini captions (N parallel calls, one per clip): validate current Gemini pricing before production pricing decisions.
 - Storage (R2): negligible
 - Compute (FFmpeg on a worker): a few cents in CPU-minutes
 
@@ -176,17 +176,16 @@ URL-based ingestion has a long tail of risks:
 ### Phase 1 — Vertical slice (2–3 weeks)
 The smallest end-to-end thing that works on your own machine.
 - YouTube URLs only.
-- yt-dlp → Whisper → Claude picks clips → FFmpeg center-crop to 9:16 → save mp4 locally.
-- No UI, just a CLI script.
+- yt-dlp → Groq Whisper → Gemini picks clips → FFmpeg center-crop to 9:16 → save mp4 locally.
+- Next.js dashboard UI only; no standalone CLI or separate worker.
 - Test on 10 real videos. Manually score clip quality.
 - **Decision gate**: are the clips actually good? If not, all the engineering polish in the world won't save it. Iterate the prompt until they are.
 
 ### Phase 2 — End-to-end MVP (4–6 weeks)
 Real product, single platform, single user.
 - Next.js web app with paste-URL form + dashboard.
-- Worker with proper queue, retries, status tracking.
-- Postgres + Redis + R2 wired up.
-- Auth via Clerk.
+- Persist jobs/clips in Postgres and use Redis for status/cache/rate limits.
+- Auth via Auth.js credentials.
 - **Auto-posting to YouTube Shorts only** (the easy platform).
 - Other three platforms: generate clip + caption, store, "download and post manually" button.
 - Deploy: web on Vercel, worker on Railway.
@@ -215,14 +214,14 @@ Real product, single platform, single user.
 |---|---|---|
 | Web framework | Next.js (App Router) | You asked for it; ecosystem fit |
 | Web hosting | Vercel | Zero-config for Next.js |
-| Worker runtime | Node.js + TypeScript | Same language as web; pipeline isn't CPU-pure (mostly orchestrating FFmpeg) |
-| Worker hosting | Railway or Fly.io | Easy long-running containers; can include FFmpeg/yt-dlp in image |
-| Job queue | BullMQ on Redis | Mature, retry support, observability |
+| Processing runtime | Next.js server code | User preference is one Next.js app for Phase 1/2 |
+| Hosting | Long-running Node host | Must support FFmpeg, yt-dlp, and long requests |
+| Status/cache | Upstash Redis | Session, dashboard cache, rate limits, and job status |
 | Database | Postgres (Supabase or Neon) | Default correct answer |
 | Storage | Cloudflare R2 | Free egress matters for this workload |
 | Auth | Clerk | Fastest to ship |
-| Transcription | OpenAI Whisper (start) | API simplicity. Evaluate Deepgram/AssemblyAI for cost at scale |
-| LLM | Claude (Opus for selection, Sonnet for captions) | Use the bigger model where reasoning matters; cheaper model for parallelized short generation |
+| Transcription | Groq Whisper | User preference; OpenAI-compatible speech endpoint with fast Whisper models |
+| LLM | Gemini | User preference for clip selection and captions |
 | Video processing | FFmpeg + yt-dlp | Industry standard |
 | Face tracking (v2) | Python sidecar with MediaPipe | Best free face detector |
 | Monitoring | Sentry + Axiom or Better Stack | Errors + structured logs |
@@ -246,7 +245,7 @@ Margin at $19 tier: $19 revenue – ~$5 in AI/compute/storage – payment fees �
 |---|---|---|---|
 | Clip quality is mediocre, indistinguishable from competitors | High | Fatal | Phase 1 decision gate. Don't build the rest until clips are good. |
 | TikTok API approval never comes | Medium | Medium | Manual-post fallback. Apply in week 1. |
-| Whisper / Claude prices rise significantly | Low | Medium | Build cost tracking per job. Have Deepgram migration plan. |
+| Groq Whisper / Gemini prices rise significantly | Low | Medium | Build cost tracking per job. Keep provider boundary isolated. |
 | User uploads pirated content, platforms ban your app | Medium | High | ToS + watermark detection + rate limits. Insure if revenue justifies it. |
 | Opus Clip ships auto-posting | High | Medium | Lean into a niche (podcasters) and depth there rather than breadth. |
 | FFmpeg crashes on weird input formats | Medium | Low | Sentry alerts, retry once, surface clear errors to user. |
@@ -259,7 +258,7 @@ Margin at $19 tier: $19 revenue – ~$5 in AI/compute/storage – payment fees �
 1. **Niche**: podcasters, course creators, or B2B founders? Recommend podcasters.
 2. **Auth provider**: Clerk (fast) or Auth.js (free, more work)? Recommend Clerk.
 3. **Self-hosted worker provider**: Railway (easiest), Fly.io (best regions), or Render? Pick one; not worth comparing further.
-4. **Transcription provider for v1**: OpenAI Whisper (simplest) or Deepgram (cheaper, no file size cap)? Recommend Whisper, migrate if costs hurt.
+4. **Transcription provider for v1**: Groq Whisper.
 5. **Burn-in subtitles in v1 or v2?** Adds significant perceived quality but also engineering time. Recommend v2 (Phase 3).
 6. **Watermark on free tier?** Standard practice; cheap to implement; helps growth. Recommend yes.
 

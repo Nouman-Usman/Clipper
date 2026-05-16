@@ -4,10 +4,13 @@ import path from "node:path";
 
 import OpenAI, { toFile } from "openai";
 
+import type { JobStatus } from "@/lib/phase2/jobs";
+
 const MAX_SOURCE_SECONDS = 60 * 60;
 const DEFAULT_CLIP_COUNT = 3;
 const DEFAULT_MIN_SECONDS = 30;
 const DEFAULT_MAX_SECONDS = 60;
+const DEFAULT_GROQ_WHISPER_MODEL = "whisper-large-v3-turbo";
 
 export type Phase1Clip = {
   index: number;
@@ -17,6 +20,7 @@ export type Phase1Clip = {
   reason: string;
   fileName: string;
   publicPath: string;
+  captions: Record<string, string>;
 };
 
 export type Phase1RunSummary = {
@@ -35,6 +39,8 @@ type GeminiClip = {
   reason?: string;
 };
 
+type PipelineStatus = Exclude<JobStatus, "pending" | "completed" | "failed">;
+
 type WhisperSegment = {
   start?: number;
   end?: number;
@@ -49,6 +55,12 @@ type WhisperVerboseResponse = {
 type CommandResult = {
   stdout: string;
   stderr: string;
+};
+
+const installHints: Record<string, string> = {
+  "yt-dlp": "Install with `brew install yt-dlp` on macOS.",
+  ffmpeg: "Install with `brew install ffmpeg` on macOS.",
+  ffprobe: "Installed with ffmpeg. Run `brew install ffmpeg` on macOS.",
 };
 
 export type Phase1EnvironmentStatus = {
@@ -99,7 +111,7 @@ async function commandVersion(command: string, args: string[]) {
   } catch (error) {
     return {
       ok: false,
-      detail: error instanceof Error ? error.message : `${command} is unavailable`,
+      detail: error instanceof Error ? `${error.message}. ${installHints[command] ?? ""}`.trim() : `${command} is unavailable`,
     };
   }
 }
@@ -116,9 +128,9 @@ export async function getPhase1EnvironmentStatus(): Promise<Phase1EnvironmentSta
     { name: "ffmpeg", ...ffmpeg },
     { name: "ffprobe", ...ffprobe },
     {
-      name: "OPENAI_API_KEY",
-      ok: Boolean(process.env.OPENAI_API_KEY),
-      detail: process.env.OPENAI_API_KEY ? "configured" : "missing",
+      name: "GROQ_API",
+      ok: Boolean(process.env.GROQ_API),
+      detail: process.env.GROQ_API ? "configured" : "missing",
     },
     {
       name: "GEMINI_API_KEY",
@@ -209,16 +221,19 @@ async function getVideoDurationSeconds(inputFile: string) {
 }
 
 async function transcribeWithWhisper(inputFile: string): Promise<WhisperVerboseResponse> {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is required for transcription.");
+  if (!process.env.GROQ_API) {
+    throw new Error("GROQ_API is required for Groq Whisper transcription.");
   }
 
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const groq = new OpenAI({
+    apiKey: process.env.GROQ_API,
+    baseURL: "https://api.groq.com/openai/v1",
+  });
   const buffer = await readFile(inputFile);
 
-  return openai.audio.transcriptions.create({
+  return groq.audio.transcriptions.create({
     file: await toFile(buffer, path.basename(inputFile)),
-    model: "whisper-1",
+    model: process.env.GROQ_WHISPER_MODEL ?? DEFAULT_GROQ_WHISPER_MODEL,
     response_format: "verbose_json",
     timestamp_granularities: ["segment"],
   }) as Promise<WhisperVerboseResponse>;
@@ -251,9 +266,75 @@ function normalizeClips(clips: GeminiClip[], minSeconds: number, maxSeconds: num
         reason: clip.reason ?? "Selected by Gemini for standalone short-form potential.",
       };
     })
-    .filter((clip): clip is Omit<Phase1Clip, "index" | "durationSeconds" | "fileName" | "publicPath"> =>
-      Boolean(clip)
+    .filter(
+      (
+        clip
+      ): clip is Omit<Phase1Clip, "index" | "durationSeconds" | "fileName" | "publicPath" | "captions"> =>
+        Boolean(clip)
     );
+}
+
+async function generateCaptionsWithGemini(input: {
+  sourceUrl: string;
+  clip: {
+    startSeconds: number;
+    endSeconds: number;
+    reason: string;
+  };
+  transcript: WhisperVerboseResponse;
+}) {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is required for caption generation.");
+  }
+
+  const model = process.env.GEMINI_MODEL ?? "gemini-1.5-pro";
+  const prompt = [
+    "Write platform-specific captions for a short podcast clip.",
+    "Return JSON only with keys: youtubeShorts, tiktok, instagramReels, x.",
+    "Keep X under 280 characters. Keep each caption grounded in the transcript and clip reason.",
+    `Source URL: ${input.sourceUrl}`,
+    `Clip window: ${input.clip.startSeconds}s to ${input.clip.endSeconds}s`,
+    `Clip reason: ${input.clip.reason}`,
+    `Transcript:\n${(input.transcript.text ?? "").slice(0, 20000)}`,
+  ].join("\n\n");
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.35,
+          responseMimeType: "application/json",
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Gemini caption generation failed: ${response.status} ${await response.text()}`);
+  }
+
+  const payload = await response.json();
+  const text = payload?.candidates?.[0]?.content?.parts
+    ?.map((part: { text?: string }) => part.text)
+    .filter(Boolean)
+    .join("\n");
+
+  if (!text) {
+    throw new Error("Gemini returned no caption output.");
+  }
+
+  const parsed = parseJsonFromModel(text);
+
+  return {
+    youtubeShorts: String(parsed.youtubeShorts ?? ""),
+    tiktok: String(parsed.tiktok ?? ""),
+    instagramReels: String(parsed.instagramReels ?? ""),
+    x: String(parsed.x ?? "").slice(0, 280),
+  };
 }
 
 async function pickClipsWithGemini(input: {
@@ -361,6 +442,8 @@ export async function runPhase1Pipeline(input: {
   clipCount: number;
   minSeconds: number;
   maxSeconds: number;
+  jobId?: string;
+  onStatus?: (status: PipelineStatus) => Promise<void>;
 }): Promise<Phase1RunSummary> {
   const environment = await getPhase1EnvironmentStatus();
   if (!environment.ok) {
@@ -373,12 +456,14 @@ export async function runPhase1Pipeline(input: {
 
   assertYouTubeUrl(input.url);
 
-  const runId = `${Date.now()}-${globalThis.crypto.randomUUID().slice(0, 8)}`;
+  const runId = input.jobId ?? `${Date.now()}-${globalThis.crypto.randomUUID().slice(0, 8)}`;
   const root = runRoot(runId);
   const clipsDir = path.join(root, "clips");
   const inputFile = path.join(root, "source.mp4");
 
   await mkdir(clipsDir, { recursive: true });
+
+  await input.onStatus?.("downloading");
 
   await runCommand(
     "yt-dlp",
@@ -399,8 +484,12 @@ export async function runPhase1Pipeline(input: {
     throw new Error(`Source is ${Math.round(durationSeconds)}s. Phase 1 max is ${MAX_SOURCE_SECONDS}s.`);
   }
 
+  await input.onStatus?.("transcribing");
+
   const transcript = await transcribeWithWhisper(inputFile);
   await writeFile(path.join(root, "transcript.json"), JSON.stringify(transcript, null, 2));
+
+  await input.onStatus?.("selecting");
 
   const selectedClips = await pickClipsWithGemini({
     transcript,
@@ -414,6 +503,8 @@ export async function runPhase1Pipeline(input: {
   }
 
   const clips: Phase1Clip[] = [];
+
+  await input.onStatus?.("cutting");
 
   for (let index = 0; index < selectedClips.length; index += 1) {
     const clip = selectedClips[index];
@@ -435,6 +526,17 @@ export async function runPhase1Pipeline(input: {
       reason: clip.reason,
       fileName,
       publicPath: `/phase1-runs/${runId}/clips/${fileName}`,
+      captions: {},
+    });
+  }
+
+  await input.onStatus?.("captioning");
+
+  for (const clip of clips) {
+    clip.captions = await generateCaptionsWithGemini({
+      sourceUrl: input.url,
+      clip,
+      transcript,
     });
   }
 
